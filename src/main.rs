@@ -1,5 +1,3 @@
-use std::{thread::sleep, time::Duration};
-
 use guido::prelude::*;
 mod app_launcher;
 mod apps;
