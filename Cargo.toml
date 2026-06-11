@@ -7,5 +7,5 @@ edition = "2024"
 guido = "0.5.0"
 linicon = "2.3.0"
 niri-ipc = "26.4.0"
-tokio = "1.52.3"
+tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
