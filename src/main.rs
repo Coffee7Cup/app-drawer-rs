@@ -1,7 +1,7 @@
-use guido::prelude::*;
 use std::time::Duration;
-use tokio::time::sleep; // Use standard sleep for delay tasks cleanly
 
+use guido::prelude::*;
+use tokio::time::{sleep, timeout};
 mod app_launcher;
 mod apps;
 mod error;
@@ -10,8 +10,7 @@ mod error;
 async fn main() {
     App::new().run(|app| {
         let panel_id: RwSignal<Option<SurfaceId>> = create_signal(None);
-        let panel_open: RwSignal<bool> = create_signal(false);
-
+        let is_plane_visible = create_signal(false);
         let _launcher_id = app.add_surface(
             SurfaceConfig::new()
                 .width(900)
@@ -25,15 +24,8 @@ async fn main() {
                     .width(900.0)
                     .background(Color::TRANSPARENT)
                     .on_hover(move |hover| {
-                        // Check state safely
-                        let current_panel = panel_id.get_untracked();
-
-                        if hover && current_panel.is_none() {
+                        if hover && panel_id.get().is_none() {
                             println!("Trigger hit: Launching panel...");
-
-                            // 1. Instantly stage the structural transition signal states
-                            panel_open.set(true);
-
                             let new_handle = spawn_surface(
                                 SurfaceConfig::new()
                                     .width(900)
@@ -42,52 +34,48 @@ async fn main() {
                                     .layer(Layer::Overlay)
                                     .exclusive_zone(Some(0)),
                                 move || {
-                                    // KEEP CLOSURE CLEAN: Avoid running naked async timeouts directly inside the view tree return
+                                    is_plane_visible.set(true);
+
                                     container()
                                         .height(fill())
                                         .width(fill())
-                                        .background(Color::from_rgba8(255, 255, 255, 50))
+                                        .background(Color::rgba(255.0, 255.0, 255.0, 0.5))
+                                        .transform(Transform::translate(0.0, -100.0))
                                         .on_hover(move |inside_panel| {
                                             if !inside_panel {
-                                                println!(
-                                                    "Mouse left panel: Triggering close animation."
-                                                );
+                                                println!("Mouse left panel: Destroying.");
+                                                is_plane_visible.set(false);
+                                                let id = panel_id.get_untracked();
 
-                                                // Trigger slide-down transition state immediately
-                                                panel_open.set(false);
-
-                                                // Extract what we need safely right now *before* entering async context
-                                                let target_id = panel_id.get_untracked();
-
-                                                // Spawn async side effect cleanly without dragging ownership into layout evaluations
                                                 tokio::spawn(async move {
-                                                    // Give the 300ms EaseOut animation time to finish sliding down
-                                                    sleep(Duration::from_millis(300)).await;
-
-                                                    if let Some(id) = target_id {
+                                                    sleep(Duration::from_millis(200)).await;
+                                                    if let Some(id) = id {
                                                         surface_handle(id).close();
                                                     }
-                                                    // Reset state trackers
-                                                    panel_id.set(None);
                                                 });
+
+                                                panel_id.set(None);
                                             }
                                         })
-                                        .animate_transform(Transition::new(
-                                            300,
-                                            TimingFunction::EaseOut,
-                                        ))
-                                        .transform(move || {
-                                            if panel_open.get() {
-                                                Transform::identity()
-                                            } else {
-                                                Transform::translate(0.0, 100.0)
-                                            }
-                                        })
-                                        .children([app_launcher::app_launcher()])
+                                        // WARN:  the children are causing "i guess" dangling pointer error Signal 69 was disposed - cannot read after owner cleanup. This usually means the signal's owner was disposed while you still hold a reference to the signal.
+                                        .children([
+                                            container()
+                                                .width(fill())
+                                                .height(move || {
+                                                    if is_plane_visible.get() { 0 } else { 100 }
+                                                })
+                                                .background(Color::rgba(255.0, 0.0, 0.0, 1.0))
+                                                .animate_height(Transition::new(
+                                                    200,
+                                                    TimingFunction::EaseInOut,
+                                                )),
+                                            app_launcher::app_launcher(),
+                                        ])
                                 },
                             );
-
-                            panel_id.set(Some(new_handle.id()));
+                            if panel_id.get().is_none() {
+                                panel_id.set(Some(new_handle.id()));
+                            }
                         }
                     })
             },
