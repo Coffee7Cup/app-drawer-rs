@@ -1,15 +1,29 @@
+use guido::widgets::ImageSource;
+use niri_ipc::{Action, Request, socket};
+
 use crate::error::Error;
 use std::{env, fs, path::PathBuf};
 
-#[derive(Default, Debug)]
-pub struct App {
+#[derive(Debug, Clone)]
+pub struct NiriApp {
     pub name: String,
     pub exec: String,
-    pub icon: String,
-    pub icon_path: PathBuf,
+    pub icon: Option<String>,
+    pub icon_path: Option<PathBuf>,
 }
 
-impl App {
+impl Default for NiriApp {
+    fn default() -> Self {
+        NiriApp {
+            name: String::new(),
+            exec: String::new(),
+            icon: None,
+            icon_path: None,
+        }
+    }
+}
+
+impl NiriApp {
     pub fn get_apps_paths() -> Result<Vec<PathBuf>, Error> {
         let xdg_data_str =
             env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
@@ -49,15 +63,14 @@ impl App {
         Ok(desktop_files)
     }
 
-    pub fn get_apps() -> Result<Vec<App>, Error> {
-        let paths = Self::get_apps_paths()?;
-        let mut apps: Vec<App> = Vec::new();
+    pub fn get_apps() -> Vec<NiriApp> {
+        let paths = Self::get_apps_paths().unwrap();
+        let mut apps: Vec<NiriApp> = Vec::new();
 
-        let home_dir =
-            env::var("HOME").map_err(|_| Error::InternalError("Cannot access Home".into()))?;
+        let home_dir = env::var("HOME")
+            .map_err(|_| Error::InternalError("Cannot access Home".into()))
+            .unwrap();
         let local_icon_path = format!("{}/.local/share/icons", home_dir);
-        let default_icon = PathBuf::from("/usr/share/appication/app-drawer/defaults/app-icon.png");
-
         for path in paths {
             let content = match fs::read_to_string(&path) {
                 Ok(c) => c,
@@ -65,7 +78,7 @@ impl App {
             };
 
             let mut is_main = false;
-            let mut app = App::default();
+            let mut app = NiriApp::default();
             let mut skip_app = false;
 
             for line in content.lines() {
@@ -85,20 +98,19 @@ impl App {
                                     app.name = value.trim().to_string();
                                 }
                                 "Icon" => {
-                                    app.icon = value.trim().to_string();
+                                    let icon = value.trim().to_string();
 
-                                    if app.icon.is_empty() {
-                                        app.icon = "Default".to_string();
-                                        app.icon_path = default_icon.clone();
-                                    }
+                                    if !icon.is_empty() {
+                                        let icon_path = linicon::lookup_icon(&icon)
+                                            .with_search_paths(&[&local_icon_path]);
 
-                                    let icon_path = linicon::lookup_icon(&app.icon)
-                                        .with_search_paths(&[&local_icon_path]);
-
-                                    if let Ok(val) = icon_path {
-                                        if let Some(icon) = val.with_size(64).next() {
-                                            if let Ok(icon2) = icon {
-                                                app.icon_path = icon2.path;
+                                        //TODO: Here there are icons for apps but still fallling back to default icons because of the not matched size.
+                                        app.icon = Some(icon);
+                                        if let Ok(val) = icon_path {
+                                            if let Some(icon) = val.with_size(64).next()
+                                                && let Ok(icon2) = icon
+                                            {
+                                                app.icon_path = Some(icon2.path);
                                             }
                                         }
                                     }
@@ -129,6 +141,41 @@ impl App {
 
         apps.dedup_by(|a, b| a.name == b.name);
 
-        Ok(apps)
+        apps
+    }
+}
+
+impl NiriApp {
+    pub fn open(&self) {
+        println!("launching app: {}", self.name);
+        let req = niri_ipc::Request::Action(Action::SpawnSh {
+            command: self.exec.to_string(),
+        });
+
+        let mut socket = niri_ipc::socket::Socket::connect().unwrap();
+        let res = socket.send(req);
+
+        match res {
+            // 1. Properly match against the error variant
+            Err(e) => {
+                println!("IPC communication error occurred: {:?}", e);
+            }
+
+            // 2. Look inside the successful response
+            Ok(niri_res) => {
+                // niri_res is likely a Result itself (hence your Ok(Ok(Handled)) output)
+                match niri_res {
+                    Ok(action_reply) => {
+                        println!("Niri handled the action successfully: {:?}", action_reply);
+                    }
+                    Err(niri_error) => {
+                        println!(
+                            "Niri accepted the request but failed to run it: {:?}",
+                            niri_error
+                        );
+                    }
+                }
+            }
+        }
     }
 }
